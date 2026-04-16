@@ -234,6 +234,17 @@ textarea{resize:none;height:60px;}
 .empty{text-align:center;padding:32px 0;color:var(--text3);font-size:13px;line-height:1.7;}
 .divider{height:1px;background:var(--border);margin:14px 0;}
 
+/* CC Split styles */
+.cc-split-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.cc-split-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;}
+.cc-split-name{flex:1;font-size:12px;color:var(--text2);font-weight:600;}
+.cc-split-input{width:110px;padding:7px 10px;font-size:13px;font-weight:700;text-align:right;}
+.cc-total-bar{background:rgba(0,0,0,0.3);border-radius:var(--radius-sm);padding:12px 14px;margin:12px 0;display:flex;justify-content:space-between;align-items:center;}
+.cc-total-label{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:1px;}
+.cc-total-val{font-size:16px;font-weight:800;}
+.cc-remaining{font-size:12px;font-weight:600;margin-top:2px;}
+.btn-cc{background:linear-gradient(135deg,#0891b2,#06b6d4);color:#fff;box-shadow:0 4px 20px rgba(6,182,212,0.25);}
+
 /* Toast */
 #toast{
   position:fixed;bottom:calc(72px + var(--safe-bot));left:50%;transform:translateX(-50%) translateY(10px);
@@ -349,6 +360,26 @@ textarea{resize:none;height:60px;}
         <label>Notes (optional)</label>
         <textarea id="inv-notes" placeholder="e.g. SIP auto-debit, bought on dip..."></textarea>
         <button class="btn-submit btn-invest" id="inv-btn" onclick="logInvest()">📈 Save Investment</button>
+      </div>
+
+      <!-- CC Split form -->
+      <div id="form-cc" class="card" style="display:none;">
+        <div class="card-title">💳 Credit Card Bill — Split by Category</div>
+        <label>Total bill amount (₹)</label>
+        <input type="number" id="cc-total" placeholder="0" style="font-size:24px;font-weight:800;" inputmode="decimal" oninput="updateCCRemaining()"/>
+        <label>Payment date</label>
+        <input type="date" id="cc-date"/>
+        <label style="margin-top:14px;">Split across categories</label>
+        <p style="font-size:11px;color:var(--text3);margin:4px 0 10px;">Enter how much of the bill went to each category. Unused categories stay at 0.</p>
+        <div id="cc-split-rows"></div>
+        <div class="cc-total-bar">
+          <div>
+            <div class="cc-total-label">Allocated</div>
+            <div class="cc-remaining" id="cc-remaining-label" style="color:var(--text3);">Enter total bill above</div>
+          </div>
+          <div class="cc-total-val" id="cc-allocated-val" style="color:var(--text3);">₹0</div>
+        </div>
+        <button class="btn-submit btn-cc" id="cc-btn" onclick="logCCBill()">💳 Save CC Bill</button>
       </div>
 
       <div id="log-status" class="status"></div>
@@ -497,7 +528,7 @@ if("serviceWorker" in navigator){
 
 // ── Init ───────────────────────────────────────────────────────
 function init(){
-  ["inc-date","exp-date","inv-date"].forEach(id=>document.getElementById(id).value=today());
+  ["inc-date","exp-date","inv-date","cc-date"].forEach(id=>{const el=document.getElementById(id);if(el)el.value=today();});
   document.getElementById("budget-input").value=budget;
   const url=localStorage.getItem("cf_url")||"";
   document.getElementById("webapp-url").value=url;
@@ -537,16 +568,17 @@ function buildInvPills(){
     `<button class="pill${t===selInvType?" invest-sel":""}" onclick="selInvType='${t}';buildInvPills()">${t}</button>`).join("");
 }
 function buildLogTypePills(){
-  const types=[{id:"income",label:"💰 Income"},{id:"expense",label:"🧾 Expense"},{id:"invest",label:"📈 Invest"}];
+  const types=[{id:"income",label:"💰 Income"},{id:"expense",label:"🧾 Expense"},{id:"invest",label:"📈 Invest"},{id:"cc",label:"💳 CC Bill"}];
   document.getElementById("log-type-pills").innerHTML=types.map(t=>
     `<button class="pill${t.id===logType?" income-sel":""}" onclick="setLogType('${t.id}')">${t.label}</button>`).join("");
 }
 function setLogType(t){
   logType=t;
   buildLogTypePills();
-  ["income","expense","invest"].forEach(type=>{
+  ["income","expense","invest","cc"].forEach(type=>{
     document.getElementById("form-"+type).style.display=type===t?"block":"none";
   });
+  if(t==="cc") buildCCSplitRows();
 }
 function buildAlertPills(){
   const pcts=[60,70,80,90];
@@ -975,6 +1007,107 @@ function showToast(msg){
 function copyScript(){
   navigator.clipboard.writeText(document.getElementById("script-code").textContent)
     .then(()=>showToast("Script copied!"));
+}
+
+// ── CC Bill Split ──────────────────────────────────────────────
+function buildCCSplitRows(){
+  document.getElementById("cc-split-rows").innerHTML=EXP_CATS.map(c=>`
+    <div class="cc-split-row">
+      <div class="cc-split-icon" style="background:${c.color}1a;">${c.icon}</div>
+      <span class="cc-split-name">${c.name}</span>
+      <input class="cc-split-input" type="number" id="cc-cat-${c.name.replace(/\s+&?\s*/g,'-')}" placeholder="0" inputmode="decimal" oninput="updateCCRemaining()" style="border-radius:var(--radius-xs);background:rgba(0,0,0,0.3);border:1px solid var(--border);color:var(--text);" min="0"/>
+    </div>`).join("");
+}
+
+function getCCInputId(catName){
+  return "cc-cat-"+catName.replace(/\s+&?\s*/g,"-");
+}
+
+function updateCCRemaining(){
+  const total=parseFloat(document.getElementById("cc-total").value)||0;
+  const allocated=EXP_CATS.reduce((s,c)=>{
+    const v=parseFloat(document.getElementById(getCCInputId(c.name))?.value)||0;
+    return s+v;
+  },0);
+  const remaining=total-allocated;
+  const remEl=document.getElementById("cc-remaining-label");
+  const allocEl=document.getElementById("cc-allocated-val");
+  const fmt=n=>"₹"+Math.round(n).toLocaleString("en-IN");
+  allocEl.textContent=fmt(allocated);
+  if(total<=0){
+    remEl.textContent="Enter total bill above";
+    remEl.style.color="var(--text3)";
+    allocEl.style.color="var(--text3)";
+  } else if(Math.abs(remaining)<1){
+    remEl.textContent="✓ Fully allocated";
+    remEl.style.color="var(--green)";
+    allocEl.style.color="var(--green)";
+  } else if(remaining>0){
+    remEl.textContent=fmt(remaining)+" still to allocate";
+    remEl.style.color="var(--amber)";
+    allocEl.style.color="var(--amber)";
+  } else {
+    remEl.textContent=fmt(Math.abs(remaining))+" over total!";
+    remEl.style.color="var(--red)";
+    allocEl.style.color="var(--red)";
+  }
+}
+
+async function logCCBill(){
+  const url=getUrl(); if(!url){showStatus("log-status","Set up Web App in Setup","err");return;}
+  const total=parseFloat(document.getElementById("cc-total").value);
+  const date=document.getElementById("cc-date").value;
+  if(isNaN(total)||total<=0){showStatus("log-status","Enter the total bill amount","err");return;}
+  if(!date){showStatus("log-status","Select a payment date","err");return;}
+
+  // Collect splits
+  const splits=EXP_CATS.map(c=>({
+    category:c.name,
+    amount:parseFloat(document.getElementById(getCCInputId(c.name))?.value)||0
+  })).filter(s=>s.amount>0);
+
+  if(splits.length===0){showStatus("log-status","Allocate at least one category","err");return;}
+
+  const allocated=splits.reduce((s,r)=>s+r.amount,0);
+  if(Math.abs(allocated-total)>1){
+    showStatus("log-status",`Allocated ₹${Math.round(allocated).toLocaleString("en-IN")} but total is ₹${Math.round(total).toLocaleString("en-IN")} — please match exactly`,"err");
+    return;
+  }
+
+  const btn=document.getElementById("cc-btn");
+  btn.disabled=true; btn.textContent=`Saving ${splits.length} entries...`;
+  showStatus("log-status","","");
+
+  let saved=0, failed=0;
+  for(const split of splits){
+    try{
+      const r=await fetch(url,{method:"POST",body:JSON.stringify({
+        action:"add",type:"expense",
+        category:split.category,
+        description:`CC Bill — ${split.category}`,
+        amount:split.amount,date
+      })});
+      const d=await r.json();
+      if(d.ok){
+        const dt=new Date(date);
+        db.expense.push({Date:date,Category:split.category,Description:`CC Bill — ${split.category}`,Amount:split.amount,Month:dt.getMonth()+1,Year:dt.getFullYear()});
+        saved++;
+      } else failed++;
+    } catch(e){ failed++; }
+  }
+
+  btn.disabled=false; btn.textContent="💳 Save CC Bill";
+
+  if(failed===0){
+    showToast(`💳 CC Bill split into ${saved} entries — ₹${Math.round(total).toLocaleString("en-IN")}`);
+    // Reset form
+    document.getElementById("cc-total").value="";
+    EXP_CATS.forEach(c=>{const el=document.getElementById(getCCInputId(c.name));if(el)el.value="";});
+    updateCCRemaining();
+    checkBudgetAlert();
+  } else {
+    showStatus("log-status",`${saved} saved, ${failed} failed. Check connection and try again.`,"err");
+  }
 }
 
 Chart.defaults.color="rgba(160,160,192,0.8)";
